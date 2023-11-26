@@ -1,14 +1,13 @@
-#%%
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 # from sklearn.model_selection import train_test_split
-from torchvision.transforms import transforms
 
 from sklearn.neighbors import NearestNeighbors
 import numpy as np
+import random
 
 
 # def get_augmentations():
@@ -74,11 +73,12 @@ def generate_synthetic(X, labels, n_neighbors=3):
     return X_oversampled, y_oversampled
 
 
-def smote(X, num_oversamples, n_neighbors=5):
+def smote(X, num_oversamples, n_neighbors=5, seed=2109):
+    np.random.seed(seed)
     n_samples, n_features = X.shape
     synthetic_samples = np.zeros((num_oversamples, n_features))
 
-    nn = NearestNeighbors(n_neighbors=n_neighbors)
+    nn = NearestNeighbors(n_neighbors=n_neighbors, algorithm='kd_tree')
     nn.fit(X)
 
     indices = np.random.randint(0, n_samples, size=num_oversamples)
@@ -114,31 +114,71 @@ def clean_x_data(X):
     # X[X > upper] = upper
     return X
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+
+# class CustomNeuralNetwork(nn.Module):
+#     def __init__(self, input_size, classes=3, drop_prob=0.5):
+#         super().__init__()
+#         self.network = nn.Sequential(
+#             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3),
+#             nn.ReLU(),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+#             nn.ReLU(),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3),
+#             nn.ReLU(),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Flatten(),
+#         )
+#
+#         self.fc = nn.Sequential(
+#             nn.Linear(256, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, 64),  # New fully connected layer
+#             nn.ReLU(),
+#             nn.Linear(64, 32),
+#             nn.ReLU(),
+#             nn.Linear(32, classes)
+#         )
+#
+#
+#     def forward(self, x):
+#         x = self.network(x)
+#         # print(x.shape)
+#         x = self.fc(x)
+#         return x
 
 
 class CustomNeuralNetwork(nn.Module):
-    def __init__(self, input_size, classes=3, drop_prob=0.3):
+    def __init__(self, input_size, classes=3, drop_prob=0.3, seed=2109):
         super().__init__()
+        torch.manual_seed(seed)
         self.network = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3),
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.ReLU(),
             nn.Dropout(drop_prob),
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
             nn.ReLU(),
-            # nn.Dropout(drop_prob),
+            nn.Dropout(drop_prob),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Flatten(),
         )
 
         self.fc = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(256, 64),
             nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, classes)
+            nn.Linear(32, classes)
         )
 
     def forward(self, x):
@@ -154,13 +194,15 @@ class Model:
     """
 
     def __init__(self,
-                 batch_size=10,
-                 epochs=10,  # epochs seem to get worse after about 10 at num_components=256
+                 batch_size=20,
+                 epochs=20,  # epochs seem to get worse after about 10 at num_components=256
                  # learning_rate=1e-3,
                  criterion=nn.CrossEntropyLoss,
                  num_components=256,
                  scaler=MinMaxScaler(),
-                 learning_rate=1e-3,
+                 learning_rate=0.0003826645125269827,
+                 dropout=0.23535222860200122,
+                 seed = 2109
                  ):
         """
         Constructor for Model class.
@@ -181,8 +223,21 @@ class Model:
 
         self.criterion = criterion()
         self.num_components = num_components
-        self.pca = PCA(n_components=num_components, svd_solver='full')
+        self.pcas = [PCA(n_components=num_components, svd_solver='full') for _ in range(3)]
+        self.scalers = [StandardScaler() for _ in range(3)]
+
+
         self.scaler = scaler
+        self.dropout = dropout
+        self.seed = seed
+
+        self.g = torch.Generator()
+        self.g.manual_seed(self.seed)
+
+
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
 
     def fit(self, X, y):
         """
@@ -202,10 +257,8 @@ class Model:
         """
         # TODO: Add your training code.
 
-        self.model = CustomNeuralNetwork(input_size=self.num_components)
-        # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9)
-
+        self.model = CustomNeuralNetwork(input_size=self.num_components, drop_prob=self.dropout)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         print('start')
 
@@ -220,23 +273,30 @@ class Model:
         # X, X_test, y, y_test = train_test_split(X, y, test_size=100)
         # print(y.min())
 
-        # Flatten and normalize the data
-        flattened_data = X.reshape(X.shape[0], -1)
+        reshaped_channels = [X[:, i, :, :].reshape(X.shape[0], -1) for i in range(X.shape[1])]
+        scaled_channels = [self.scalers[i].fit_transform(channel.T).T for i, channel in enumerate(reshaped_channels)]
+        transformed_channels = [self.pcas[i].fit_transform(channel) for i, channel in enumerate(scaled_channels)]
+        reconstructed_channels = [self.pcas[i].inverse_transform(transformed_channel) for i, transformed_channel in enumerate(transformed_channels)]
+        reconstructed_image = np.stack([channel.reshape(X.shape[0], 16, 16) for channel in reconstructed_channels], axis=-1)
+        reconstructed_image_input = np.transpose(reconstructed_image, (0, 3, 1, 2))
+        # reconstructed_image_input = np.expand_dims(reconstructed_image, axis=0)
 
-        normalized_data = self.scaler.fit_transform(flattened_data)
-        # print("pre-pca")
-        # print(y.min())
-        pca_result = self.pca.fit_transform(normalized_data)
-        reconstructed = self.pca.inverse_transform(pca_result)
-        original_pca = reconstructed.reshape(-1, *X.shape[1:])
 
-        pca_result_tensor = torch.tensor(original_pca, dtype=torch.float32)  #.to(self.device)
+
+
+        pca_result_tensor = torch.tensor(reconstructed_image_input, dtype=torch.float32)  #.to(self.device)
         labels_tensor = torch.tensor(y, dtype=torch.long)  # .to(self.device)
 
         # print(y.min())
         # dataset = CustomTensorDataset(tensors=(pca_result_tensor, labels_tensor), transform=get_augmentations())
         dataset = TensorDataset(pca_result_tensor, labels_tensor)
-        train_loader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True)
+        train_loader = DataLoader(dataset=dataset,
+                                  batch_size=self.batch_size,
+                                  shuffle=True,
+                                  num_workers=0,
+                                  worker_init_fn=seed_worker,
+                                  generator=self.g
+                                  )
         # print("pre-epoch")
 
         epoch_losses = []
@@ -278,15 +338,18 @@ class Model:
         # X.to(self.device)
         self.model.eval()
 
-        flattened_data = X.reshape(X.shape[0], -1)
-        normalized_data = self.scaler.transform(flattened_data)
-        pca_result = self.pca.transform(normalized_data)
-        reconstructed = self.pca.inverse_transform(pca_result)
-        original_pca = reconstructed.reshape(-1, *X.shape[1:])
 
-        print("fit shape:", pca_result.shape)
+        reshaped_channels = [X[:, i, :, :].reshape(X.shape[0], -1) for i in range(X.shape[1])]
+        scaled_channels = [self.scalers[i].fit_transform(channel.T).T for i, channel in enumerate(reshaped_channels)]
+        transformed_channels = [self.pcas[i].fit_transform(channel) for i, channel in enumerate(scaled_channels)]
+        reconstructed_channels = [self.pcas[i].inverse_transform(transformed_channel) for i, transformed_channel in enumerate(transformed_channels)]
+        reconstructed_image = np.stack([channel.reshape(X.shape[0], 16, 16) for channel in reconstructed_channels], axis=-1)
+        reconstructed_image_input = np.transpose(reconstructed_image, (0, 3, 1, 2))
+        # reconstructed_image_input = np.expand_dims(reconstructed_image, axis=0)
 
-        original_pca = torch.tensor(original_pca, dtype=torch.float32)  #.to(self.device)
+        print("fit shape:", reconstructed_image_input.shape)
+
+        original_pca = torch.tensor(reconstructed_image_input, dtype=torch.float32)  #.to(self.device)
         with torch.no_grad():
             outputs = self.model(original_pca)
         return outputs.detach().numpy().argmax(axis=1)
@@ -305,7 +368,6 @@ with open('data.npy', 'rb') as f:
     data = np.load(f, allow_pickle=True).item()
     X = data['image']
     y = data['label']
-
 # Split train and test
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
 
@@ -317,14 +379,20 @@ mask[nan_indices] = False
 X_test = X_test[mask]
 y_test = y_test[mask]
 
+
 # Train and predict
 
-# model = Model()
-# model.fit(X_train, y_train)
-#
-# y_pred = model.predict(X_test)
+model = Model()
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+
+# Evaluate model predition
+# Learn more: https://scikit-learn.org/stable/modules/classes.html#module-sklearn.metrics
+print("F1 Score (macro): {0:.2f}".format(f1_score(y_test, y_pred, average='macro'))) # You may encounter errors, you are expected to figure out what's the issue.
 
 #%%
+
 # N fold cross validation
 import numpy as np
 from sklearn.model_selection import KFold
@@ -342,7 +410,7 @@ mask[nan_indices] = False
 X = X[mask]
 y = y[mask]
 
-num_folds = 5
+num_folds = 10
 
 model = Model()
 kf = KFold(n_splits=num_folds, shuffle=True, random_state=2109)
@@ -357,10 +425,10 @@ for train_index, test_index in kf.split(X):
     score = f1_score(y[test_index], predictions, average='macro')
 
     f1_scores.append(score)
-    print("train_index:", score)
+    print("f1:", score)
 
 print("F1:", f1_scores)
 print("Mean:", np.mean(f1_scores))
 print("Std:", np.std(f1_scores))
-
-#%%
+print("Max:", np.max(f1_scores))
+print("Min:", np.min(f1_scores))
