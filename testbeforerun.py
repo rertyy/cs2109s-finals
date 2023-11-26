@@ -1,13 +1,44 @@
+#%%
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 # from sklearn.model_selection import train_test_split
+from torchvision.transforms import transforms
 
 
 from sklearn.neighbors import NearestNeighbors
 import numpy as np
+
+def get_augmentations():
+    return transforms.Compose([transforms.RandomHorizontalFlip(),
+                               transforms.RandomVerticalFlip(),
+                               transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                               ])
+
+
+class CustomTensorDataset(Dataset):
+    """TensorDataset with support of transforms.
+    Copied directly from https://stackoverflow.com/questions/55588201/pytorch-transforms-on-tensordataset
+    """
+    def __init__(self, tensors, transform=None):
+        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
+        self.tensors = tensors
+        self.transform = transform
+
+    def __getitem__(self, index):
+        x = self.tensors[0][index]
+
+        if self.transform:
+            x = self.transform(x)
+
+        y = self.tensors[1][index]
+
+        return x, y
+
+    def __len__(self):
+        return self.tensors[0].size(0)
 
 def generate_synthetic(X, labels, n_neighbors=3):
     X = X.copy()
@@ -74,33 +105,78 @@ def clean_x_data(X):
     X[np.isnan(X)] = np.nanmedian(X)
     X[X < 0] = 0
     X[X > 255] = 255
+    # lower = np.percentile(X, 25) * 1.15
+    # upper = np.percentile(X, 75) * 1.5
+    # X[X < lower] = lower
+    # X[X > upper] = upper
     return X
 
+# class CustomNeuralNetwork(nn.Module):
+#     def __init__(self, input_size, classes=3, drop_prob=0.5):
+#         super().__init__()
+#         self.network = nn.Sequential(
+#             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3),
+#             nn.ReLU(),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+#             nn.ReLU(),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3),
+#             nn.ReLU(),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3),
+#             nn.MaxPool2d(kernel_size=2, stride=2),
+#             nn.Flatten(),
+#         )
+#
+#         self.fc = nn.Sequential(
+#             nn.Linear(256, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, 64),  # New fully connected layer
+#             nn.ReLU(),
+#             nn.Linear(64, 32),
+#             nn.ReLU(),
+#             nn.Linear(32, classes)
+#         )
+#
+#
+#     def forward(self, x):
+#         x = self.network(x)
+#         # print(x.shape)
+#         x = self.fc(x)
+#         return x
+
+
 class CustomNeuralNetwork(nn.Module):
-    def __init__(self, input_size, classes=3, drop_prob=0.5):
+    def __init__(self, input_size, classes=3, drop_prob=0.3):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=6, kernel_size=5),
-            nn.ReLU(),
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5),
             nn.ReLU(),
+            nn.Dropout(drop_prob),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+            nn.ReLU(),
+            nn.Dropout(drop_prob),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Flatten(),
-
         )
+
         self.fc = nn.Sequential(
-            nn.Linear(16, 120),
+            nn.Linear(256, 64),
             nn.ReLU(),
-            nn.Linear(120, 84),
+            # nn.Linear(240, 120),  # New fully connected layer
+            # nn.ReLU(),
+            nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(84, 10)
+            nn.Linear(32, classes)
         )
-
     def forward(self, x):
         x = self.network(x)
+        # print(x.shape)
         x = self.fc(x)
         return x
+
 
 
 
@@ -111,10 +187,10 @@ class Model:
 
     def __init__(self,
                  batch_size=10,
-                 epochs=3,
+                 epochs=10, # epochs seem to get worse after about 10 at num_components=256
                  learning_rate=1e-3,
                  criterion=nn.CrossEntropyLoss,
-                 num_components = 128,
+                 num_components = 256,
                  ):
         """
         Constructor for Model class.
@@ -136,7 +212,7 @@ class Model:
         self.criterion = criterion()
         self.num_components = num_components
         self.pca = PCA(n_components=num_components, svd_solver='full')
-        self.scaler = MinMaxScaler()
+        self.scaler = MinMaxScaler() #minmax scaler seems to work better
 
 
 
@@ -169,7 +245,7 @@ class Model:
 
 
 
-        print("pre-synthetic")
+        # print("pre-synthetic")
         X, y = generate_synthetic(X, y, 5)
         # print(y.min())
 
@@ -191,15 +267,15 @@ class Model:
         labels_tensor = torch.tensor(y, dtype=torch.long) # .to(self.device)
 
         # print(y.min())
-
-        dataset = TensorDataset(pca_result_tensor, labels_tensor)
+        dataset = CustomTensorDataset(tensors=(pca_result_tensor, labels_tensor), transform=get_augmentations())
+        # dataset = TensorDataset(pca_result_tensor, labels_tensor)
         train_loader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True)
-        print("pre-epoch")
+        # print("pre-epoch")
 
         epoch_losses = []
         for epoch in range(self.epochs):
             epoch_loss = 0
-            print(f"Epoch {epoch+1}")
+            # print(f"Epoch {epoch+1}")
             for inputs, labels in train_loader:
                 # print(inputs, labels)
                 self.optimizer.zero_grad()
@@ -244,8 +320,11 @@ class Model:
         print("fit shape:", pca_result.shape)
 
         original_pca = torch.tensor(original_pca, dtype=torch.float32) #.to(self.device)
-        outputs = self.model(original_pca)
+        with torch.no_grad():
+            outputs = self.model(original_pca)
         return outputs.detach().numpy().argmax(axis=1)
+
+
 
 
 
@@ -299,7 +378,7 @@ mask[nan_indices] = False
 X = X[mask]
 y = y[mask]
 
-num_folds = 5
+num_folds = 3
 
 model = Model()
 kf = KFold(n_splits=num_folds, shuffle=True, random_state=2109)
