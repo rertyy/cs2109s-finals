@@ -1,50 +1,21 @@
+from timeit import timeit
+
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from memory_profiler import profile
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 # from sklearn.model_selection import train_test_split
-from torchvision.transforms import transforms
+
 
 from sklearn.neighbors import NearestNeighbors
 import numpy as np
 
-
-# def get_augmentations():
-#     return transforms.Compose([transforms.RandomHorizontalFlip(),
-#                                transforms.RandomVerticalFlip(),
-#                                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-#                                ])
-
-
-class CustomTensorDataset(Dataset):
-    """TensorDataset with support of transforms.
-    Copied directly from https://stackoverflow.com/questions/55588201/pytorch-transforms-on-tensordataset
-    """
-
-    def __init__(self, tensors, transform=None):
-        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
-        self.tensors = tensors
-        self.transform = transform
-
-    def __getitem__(self, index):
-        x = self.tensors[0][index]
-
-        if self.transform:
-            x = self.transform(x)
-
-        y = self.tensors[1][index]
-
-        return x, y
-
-    def __len__(self):
-        return self.tensors[0].size(0)
-
-
 def generate_synthetic(X, labels, n_neighbors=3):
     X = X.copy()
     print(X.shape)
-    X_where_y0 = X[labels == 0]  # majority class
+    X_where_y0 = X[labels == 0] # majority class
     X_where_y1 = X[labels == 1]
     X_where_y2 = X[labels == 2]
     y0_num = X_where_y0.shape[0]
@@ -62,6 +33,7 @@ def generate_synthetic(X, labels, n_neighbors=3):
 
     X_w_y1_synthetic = X_w_y1_synthetic.reshape(-1, *X_where_y1.shape[1:])
     X_w_y2_synthetic = X_w_y2_synthetic.reshape(-1, *X_where_y2.shape[1:])
+
 
     X_oversampled = np.vstack([X, X_w_y1_synthetic, X_w_y2_synthetic])
     y_oversampled = np.hstack([
@@ -93,7 +65,6 @@ def smote(X, num_oversamples, n_neighbors=5):
 
     return synthetic_samples.reshape(num_oversamples, *X.shape[1:])
 
-
 def drop_nan_y(X, y):
     nan_indices = np.argwhere(np.isnan(y)).squeeze()
     mask = np.ones(y.shape, bool)
@@ -102,82 +73,38 @@ def drop_nan_y(X, y):
     y = y[mask]
     return X, y
 
-
 def clean_x_data(X):
     X[np.isnan(X)] = np.nanmedian(X)
     X[X < 0] = 0
     X[X > 255] = 255
-    # lower = np.percentile(X, 25) * 1.15
-    # upper = np.percentile(X, 75) * 1.5
-    # X[X < lower] = lower
-    # X[X > upper] = upper
     return X
 
-
-# class CustomNeuralNetwork(nn.Module):
-#     def __init__(self, input_size, classes=3, drop_prob=0.5):
-#         super().__init__()
-#         self.network = nn.Sequential(
-#             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3),
-#             nn.ReLU(),
-#             nn.MaxPool2d(kernel_size=2, stride=2),
-#             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
-#             nn.ReLU(),
-#             nn.MaxPool2d(kernel_size=2, stride=2),
-#             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3),
-#             nn.ReLU(),
-#             nn.MaxPool2d(kernel_size=2, stride=2),
-#             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3),
-#             nn.MaxPool2d(kernel_size=2, stride=2),
-#             nn.Flatten(),
-#         )
-#
-#         self.fc = nn.Sequential(
-#             nn.Linear(256, 128),
-#             nn.ReLU(),
-#             nn.Linear(128, 64),  # New fully connected layer
-#             nn.ReLU(),
-#             nn.Linear(64, 32),
-#             nn.ReLU(),
-#             nn.Linear(32, classes)
-#         )
-#
-#
-#     def forward(self, x):
-#         x = self.network(x)
-#         # print(x.shape)
-#         x = self.fc(x)
-#         return x
-
-
 class CustomNeuralNetwork(nn.Module):
-    def __init__(self, input_size, classes=3, drop_prob=0.3):
+    def __init__(self, input_size, classes=3, drop_prob=0.5):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3),
+            nn.Conv2d(in_channels=3, out_channels=6, kernel_size=5),
+            nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5),
             nn.ReLU(),
-            nn.Dropout(drop_prob),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
-            nn.ReLU(),
-            # nn.Dropout(drop_prob),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Flatten(),
-        )
 
+        )
         self.fc = nn.Sequential(
-            nn.Linear(256, 64),
+            nn.Linear(16, 120),
             nn.ReLU(),
-            nn.Linear(64, 32),
+            nn.Linear(120, 84),
             nn.ReLU(),
-            nn.Linear(32, classes)
+            nn.Linear(84, 10)
         )
 
     def forward(self, x):
         x = self.network(x)
-        # print(x.shape)
         x = self.fc(x)
         return x
+
 
 
 class Model:
@@ -186,14 +113,11 @@ class Model:
     """
 
     def __init__(self,
-                 batch_size=20,
-                 epochs=10,  # epochs seem to get worse after about 10 at num_components=256
-                 # learning_rate=1e-3,
+                 batch_size=10,
+                 epochs=3,
+                 learning_rate=1e-3,
                  criterion=nn.CrossEntropyLoss,
-                 num_components=256,
-                 scaler=MinMaxScaler(),
-                 learning_rate=0.0003826645125269827,
-                 dropout=0.23535222860200122
+                 num_components = 128,
                  ):
         """
         Constructor for Model class.
@@ -215,8 +139,9 @@ class Model:
         self.criterion = criterion()
         self.num_components = num_components
         self.pca = PCA(n_components=num_components, svd_solver='full')
-        self.scaler = scaler
-        self.dropout = dropout
+        self.scaler = MinMaxScaler()
+
+
 
     def fit(self, X, y):
         """
@@ -236,7 +161,7 @@ class Model:
         """
         # TODO: Add your training code.
 
-        self.model = CustomNeuralNetwork(input_size=self.num_components, drop_prob=self.dropout)
+        self.model = CustomNeuralNetwork(input_size=self.num_components)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         print('start')
@@ -245,7 +170,9 @@ class Model:
 
         X = clean_x_data(X)
 
-        # print("pre-synthetic")
+
+
+        print("pre-synthetic")
         X, y = generate_synthetic(X, y, 5)
         # print(y.min())
 
@@ -262,19 +189,20 @@ class Model:
         reconstructed = self.pca.inverse_transform(pca_result)
         original_pca = reconstructed.reshape(-1, *X.shape[1:])
 
-        pca_result_tensor = torch.tensor(original_pca, dtype=torch.float32)  #.to(self.device)
-        labels_tensor = torch.tensor(y, dtype=torch.long)  # .to(self.device)
+
+        pca_result_tensor = torch.tensor(original_pca, dtype=torch.float32) #.to(self.device)
+        labels_tensor = torch.tensor(y, dtype=torch.long) # .to(self.device)
 
         # print(y.min())
-        # dataset = CustomTensorDataset(tensors=(pca_result_tensor, labels_tensor), transform=get_augmentations())
+
         dataset = TensorDataset(pca_result_tensor, labels_tensor)
         train_loader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True)
-        # print("pre-epoch")
+        print("pre-epoch")
 
         epoch_losses = []
         for epoch in range(self.epochs):
             epoch_loss = 0
-            # print(f"Epoch {epoch+1}")
+            print(f"Epoch {epoch+1}")
             for inputs, labels in train_loader:
                 # print(inputs, labels)
                 self.optimizer.zero_grad()
@@ -284,7 +212,7 @@ class Model:
                 self.optimizer.step()
                 epoch_loss += loss.item()
             epoch_losses.append(epoch_loss / len(train_loader))
-            print(f"Epoch {epoch + 1} loss: {epoch_losses[-1]}")
+            print(f"Epoch {epoch+1} loss: {epoch_losses[-1]}")
 
         return self
 
@@ -318,84 +246,92 @@ class Model:
 
         print("fit shape:", pca_result.shape)
 
-        original_pca = torch.tensor(original_pca, dtype=torch.float32)  #.to(self.device)
-        with torch.no_grad():
-            outputs = self.model(original_pca)
+        original_pca = torch.tensor(original_pca, dtype=torch.float32) #.to(self.device)
+        outputs = self.model(original_pca)
         return outputs.detach().numpy().argmax(axis=1)
 
-
-
-
-
 #%%
-# Import packages
-import pandas as pd
-import numpy as np
-import os
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+@profile
+@timeit
+def main():
+    """
+    Main function.
+    """
 
-# Load data
-with open('data.npy', 'rb') as f:
-    data = np.load(f, allow_pickle=True).item()
-    X = data['image']
-    y = data['label']
+    # Import packages
+    import pandas as pd
+    import numpy as np
+    import os
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, r2_score
+    from sklearn.model_selection import train_test_split
 
-# Split train and test
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
-
-# Filter test data that contains no labels
-# In Coursemology, the test data is guaranteed to have labels
-nan_indices = np.argwhere(np.isnan(y_test)).squeeze()
-mask = np.ones(y_test.shape, bool)
-mask[nan_indices] = False
-X_test = X_test[mask]
-y_test = y_test[mask]
-
-# Train and predict
-
-model = Model()
-model.fit(X_train, y_train)
-
-y_pred = model.predict(X_test)
-
-#%%
-# N fold cross validation
-import numpy as np
-from sklearn.model_selection import KFold
-from sklearn.metrics import f1_score
-
-with open('data.npy', 'rb') as f:
-    data = np.load(f, allow_pickle=True).item()
-    X = data['image']
-    y = data['label']
+    # Load data
+    with open('data.npy', 'rb') as f:
+        data = np.load(f, allow_pickle=True).item()
+        X = data['image']
+        y = data['label']
 
 
-nan_indices = np.argwhere(np.isnan(y)).squeeze()
-mask = np.ones(y.shape, bool)
-mask[nan_indices] = False
-X = X[mask]
-y = y[mask]
+    # Split train and test
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
 
-num_folds = 3
+    # Filter test data that contains no labels
+    # In Coursemology, the test data is guaranteed to have labels
+    nan_indices = np.argwhere(np.isnan(y_test)).squeeze()
+    mask = np.ones(y_test.shape, bool)
+    mask[nan_indices] = False
+    X_test = X_test[mask]
+    y_test = y_test[mask]
 
-model = Model()
-kf = KFold(n_splits=num_folds, shuffle=True, random_state=2109)
+    # Train and predict
+    model = Model()
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
 
-f1_scores = []
+    # Evaluate model predition
+    # Learn more: https://scikit-learn.org/stable/modules/classes.html#module-sklearn.metrics
+    print("F1 Score (macro): {0:.2f}".format(f1_score(y_test, y_pred, average='macro'))) # You may encounter errors, you are expected to figure out what's the issue.
 
-for train_index, test_index in kf.split(X):
-    model.fit(X=X[train_index], y=y[train_index])
 
-    predictions = model.predict(X[test_index])
+@timeit
+@profile
+def kfold():
 
-    score = f1_score(y[test_index], predictions, average='macro')
 
-    f1_scores.append(score)
-    print("train_index:", score)
+    # N fold cross validation
+    import numpy as np
+    from sklearn.model_selection import KFold
+    from sklearn.metrics import f1_score
 
-print("F1:", f1_scores)
-print("Mean:", np.mean(f1_scores))
-print("Std:", np.std(f1_scores))
+    with open('data.npy', 'rb') as f:
+        data = np.load(f, allow_pickle=True).item()
+        X = data['image']
+        y = data['label']
 
-#%%
+
+    nan_indices = np.argwhere(np.isnan(y)).squeeze()
+    mask = np.ones(y.shape, bool)
+    mask[nan_indices] = False
+    X = X[mask]
+    y = y[mask]
+
+    num_folds = 3
+
+    model = Model()
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=2109)
+
+    f1_scores = []
+
+    for train_index, test_index in kf.split(X):
+        model.fit(X=X[train_index], y=y[train_index])
+
+        predictions = model.predict(X[test_index])
+
+        score = f1_score(y[test_index], predictions, average='macro')
+
+        f1_scores.append(score)
+        print("train_index:", score)
+
+    print("F1:", f1_scores)
+    print("Mean:", np.mean(f1_scores))
+    print("Std:", np.std(f1_scores))
