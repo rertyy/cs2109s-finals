@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split
 
 
 from sklearn.neighbors import NearestNeighbors
@@ -80,13 +80,28 @@ class CustomNeuralNetwork(nn.Module):
     def __init__(self, input_size, classes=3, drop_prob=0.5):
         super().__init__()
         self.network = nn.Sequential(
-                nn.Linear(input_size, 128),
-                nn.ReLU(),
-                nn.Linear(128, classes),
+            nn.Conv2d(in_channels=3, out_channels=6, kernel_size=5),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Flatten(),
+
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(16, 120),
+            nn.ReLU(),
+            nn.Linear(120, 84),
+            nn.ReLU(),
+            nn.Linear(84, 10)
         )
 
     def forward(self, x):
-        return self.network(x)
+        x = self.network(x)
+        x = self.fc(x)
+        return x
+
 
 
 class Model:
@@ -94,16 +109,16 @@ class Model:
     This class represents an AI model.
     """
 
-    def __init__(self, 
-                 batch_size=10, 
-                 epochs=3, 
-                 learning_rate=1e-3, 
+    def __init__(self,
+                 batch_size=10,
+                 epochs=3,
+                 learning_rate=1e-3,
                  criterion=nn.CrossEntropyLoss,
                  num_components = 128,
                  ):
         """
         Constructor for Model class.
-  
+
         Parameters
         ----------
         self : object
@@ -117,25 +132,25 @@ class Model:
         self.batch_size = batch_size
         self.epochs = epochs
         self.learning_rate = learning_rate
-        
+
         self.criterion = criterion()
         self.num_components = num_components
         self.pca = PCA(n_components=num_components, svd_solver='full')
         self.scaler = MinMaxScaler()
-        
-        
+
+
 
     def fit(self, X, y):
         """
         Train the model using the input data.
-        
+
         Parameters
         ----------
         X : ndarray of shape (n_samples, channel, height, width)
             Training data.
         y : ndarray of shape (n_samples,)
             Target values.
-            
+
         Returns
         -------
         self : object
@@ -157,19 +172,22 @@ class Model:
         print("pre-synthetic")
         X, y = generate_synthetic(X, y, 5)
         # print(y.min())
-        
-        X, X_test, y, y_test = train_test_split(X, y, test_size=100)
+
+        # X, X_test, y, y_test = train_test_split(X, y, test_size=100)
         # print(y.min())
 
         # Flatten and normalize the data
         flattened_data = X.reshape(X.shape[0], -1)
-        
+
         normalized_data = self.scaler.fit_transform(flattened_data)
         # print("pre-pca")
         # print(y.min())
         pca_result = self.pca.fit_transform(normalized_data)
+        reconstructed = self.pca.inverse_transform(pca_result)
+        original_pca = reconstructed.reshape(-1, *X.shape[1:])
 
-        pca_result_tensor = torch.tensor(pca_result, dtype=torch.float32) #.to(self.device)
+
+        pca_result_tensor = torch.tensor(original_pca, dtype=torch.float32) #.to(self.device)
         labels_tensor = torch.tensor(y, dtype=torch.long) # .to(self.device)
 
         # print(y.min())
@@ -184,41 +202,35 @@ class Model:
             print(f"Epoch {epoch+1}")
             for inputs, labels in train_loader:
                 # print(inputs, labels)
-                # print("a1")
                 self.optimizer.zero_grad()
-                # print("a2")
                 outputs = self.model(inputs)
-                # print("a3")
                 loss = self.criterion(outputs, labels)
-                # print("a4")
                 loss.backward()
-                # print("a5")
                 self.optimizer.step()
-                # print("a6")
                 epoch_loss += loss.item()
             epoch_losses.append(epoch_loss / len(train_loader))
             print(f"Epoch {epoch+1} loss: {epoch_losses[-1]}")
-        
+
         return self
 
     def predict(self, X):
         """
         Use the trained model to make predictions.
-        
+
         Parameters
         ----------
         X : ndarray of shape (n_samples, channel, height, width)
             Input data.
-            
+
         Returns
         -------
         ndarray of shape (n_samples,)
         Predicted target values per element in X.
-           
+
         """
         # TODO: Replace the following code with your own prediction code.
         X = clean_x_data(X)
-        
+
         X = torch.from_numpy(X).float()
         # X.to(self.device)
         self.model.eval()
@@ -226,10 +238,86 @@ class Model:
         flattened_data = X.reshape(X.shape[0], -1)
         normalized_data = self.scaler.transform(flattened_data)
         pca_result = self.pca.transform(normalized_data)
+        reconstructed = self.pca.inverse_transform(pca_result)
+        original_pca = reconstructed.reshape(-1, *X.shape[1:])
 
         print("fit shape:", pca_result.shape)
-        
-        pca_result = torch.tensor(pca_result, dtype=torch.float32) #.to(self.device)
-        outputs = self.model(pca_result)
+
+        original_pca = torch.tensor(original_pca, dtype=torch.float32) #.to(self.device)
+        outputs = self.model(original_pca)
         return outputs.detach().numpy().argmax(axis=1)
-    
+
+
+
+#%%
+# Import packages
+import pandas as pd
+import numpy as np
+import os
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, r2_score
+from sklearn.model_selection import train_test_split
+
+# Load data
+with open('data.npy', 'rb') as f:
+    data = np.load(f, allow_pickle=True).item()
+    X = data['image']
+    y = data['label']
+
+# Split train and test
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
+
+# Filter test data that contains no labels
+# In Coursemology, the test data is guaranteed to have labels
+nan_indices = np.argwhere(np.isnan(y_test)).squeeze()
+mask = np.ones(y_test.shape, bool)
+mask[nan_indices] = False
+X_test = X_test[mask]
+y_test = y_test[mask]
+
+# Train and predict
+
+model = Model()
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+
+#%%
+# N fold cross validation
+import numpy as np
+from sklearn.model_selection import KFold
+from sklearn.metrics import f1_score
+
+with open('data.npy', 'rb') as f:
+    data = np.load(f, allow_pickle=True).item()
+    X = data['image']
+    y = data['label']
+
+
+nan_indices = np.argwhere(np.isnan(y)).squeeze()
+mask = np.ones(y.shape, bool)
+mask[nan_indices] = False
+X = X[mask]
+y = y[mask]
+
+num_folds = 5
+
+model = Model()
+kf = KFold(n_splits=num_folds, shuffle=True, random_state=2109)
+
+f1_scores = []
+
+for train_index, test_index in kf.split(X):
+    model.fit(X=X[train_index], y=y[train_index])
+
+    predictions = model.predict(X[test_index])
+
+    score = f1_score(y[test_index], predictions, average='macro')
+
+    f1_scores.append(score)
+    print("train_index:", score)
+
+print("F1:", f1_scores)
+print("Mean:", np.mean(f1_scores))
+print("Std:", np.std(f1_scores))
+
+#%%
