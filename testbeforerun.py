@@ -1,45 +1,15 @@
 #%%
+
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import MinMaxScaler
+# from sklearn.model_selection import train_test_split
+from sklearn.neighbors import NearestNeighbors
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset, Dataset
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
-# from sklearn.model_selection import train_test_split
-from torchvision.transforms import transforms
-
-from sklearn.neighbors import NearestNeighbors
-import numpy as np
 
 
-# def get_augmentations():
-#     return transforms.Compose([transforms.RandomHorizontalFlip(),
-#                                transforms.RandomVerticalFlip(),
-#                                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-#                                ])
 
-
-class CustomTensorDataset(Dataset):
-    """TensorDataset with support of transforms.
-    Copied directly from https://stackoverflow.com/questions/55588201/pytorch-transforms-on-tensordataset
-    """
-
-    def __init__(self, tensors, transform=None):
-        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
-        self.tensors = tensors
-        self.transform = transform
-
-    def __getitem__(self, index):
-        x = self.tensors[0][index]
-
-        if self.transform:
-            x = self.transform(x)
-
-        y = self.tensors[1][index]
-
-        return x, y
-
-    def __len__(self):
-        return self.tensors[0].size(0)
 
 
 def generate_synthetic(X, labels, n_neighbors=3):
@@ -115,7 +85,6 @@ def clean_x_data(X):
     return X
 
 
-
 class CustomNeuralNetwork(nn.Module):
     def __init__(self, input_size, classes=3, drop_prob=0.3):
         super().__init__()
@@ -135,6 +104,7 @@ class CustomNeuralNetwork(nn.Module):
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Linear(256, 128),
+            # nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
@@ -154,13 +124,16 @@ class Model:
     """
 
     def __init__(self,
-                 batch_size=10,
-                 epochs=10,  # epochs seem to get worse after about 10 at num_components=256
-                 # learning_rate=1e-3,
-                 criterion=nn.CrossEntropyLoss,
+                 batch_size=20,
+                 epochs=15,
+                #  epochs=25,
+                 criterion=nn.CrossEntropyLoss(),
                  num_components=256,
                  scaler=MinMaxScaler(),
-                 learning_rate=1e-3,
+                #  learning_rate=1e-3,
+                 learning_rate=0.00236972,
+                #  drop_prob=0.3
+                 drop_prob=0.475464
                  ):
         """
         Constructor for Model class.
@@ -179,10 +152,11 @@ class Model:
         self.epochs = epochs
         self.learning_rate = learning_rate
 
-        self.criterion = criterion()
+        self.criterion = criterion
         self.num_components = num_components
         self.pca = PCA(n_components=num_components, svd_solver='full')
         self.scaler = scaler
+        self.drop_prob = drop_prob
 
     def fit(self, X, y):
         """
@@ -205,7 +179,7 @@ class Model:
         self.model = CustomNeuralNetwork(input_size=self.num_components)
         # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9)
-
+        # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.01)
 
         print('start')
 
@@ -216,6 +190,7 @@ class Model:
         # print("pre-synthetic")
         X, y = generate_synthetic(X, y, 5)
         # print(y.min())
+        print(y[y==0].shape, y[y==1].shape, y[y==2].shape)
 
         # X, X_test, y, y_test = train_test_split(X, y, test_size=100)
         # print(y.min())
@@ -251,6 +226,7 @@ class Model:
                 loss.backward()
                 self.optimizer.step()
                 epoch_loss += loss.item()
+            # self.scheduler.step()
             epoch_losses.append(epoch_loss / len(train_loader))
             print(f"Epoch {epoch + 1} loss: {epoch_losses[-1]}")
 
